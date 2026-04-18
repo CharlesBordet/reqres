@@ -937,7 +937,7 @@ Request <- R6Class(
     #' implementation, along with a proper name for the span
     #' (`{method}_{route}`). The span is automatically closed when the response
     #' is converted to a list, unless asked not to. *Immutable*
-    otel_span = function() {
+    otel = function() {
       private$OSPAN
     },
     #' @field start_time The time point the Request was created
