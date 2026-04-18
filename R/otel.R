@@ -46,7 +46,7 @@ metric_attributes <- function(request, response) {
     network.protocol.name = "http",
     network.protocol.version = "1.1",
     server.address = sub("^(.*):.*$", "\\1", request$host),
-    server.port = as.integer(sub("^.*:(.*)$", "\\1", request$host))
+    server.port = server_port_from_host(request$host, request$protocol)
   )
 }
 record_duration <- function(request, attributes) {
@@ -71,7 +71,7 @@ push_active_request <- function(request) {
         http.request.method = toupper(request$method),
         url.scheme = request$protocol,
         server.address = sub("^(.*):.*$", "\\1", request$host),
-        server.port = as.integer(sub("^.*:(.*)$", "\\1", request$host))
+        server.port = server_port_from_host(request$host, request$protocol)
       ),
       context = request$otel,
       meter = meter
@@ -138,7 +138,7 @@ request_ospan <- function(request, start_time, tracer) {
       url.path = request$path,
       url.scheme = request$protocol,
       network.protocol.name = "http",
-      server.port = as.integer(sub("^.*:(.*)$", "\\1", request$host)),
+      server.port = server_port_from_host(request$host, request$protocol),
       url.query = request$querystring,
       client.address = request$ip,
       network.protocol.version = "1.1",
@@ -154,4 +154,15 @@ request_ospan <- function(request, start_time, tracer) {
     ),
     tracer = tracer
   )
+}
+
+server_port_from_host <- function(host, scheme) {
+  m <- regmatches(host, regexec(":([0-9]+)$", host))[[1]]
+  if (length(m) == 2L) {
+    as.integer(m[[2]]) 
+  } else if (identical(scheme, "https")) {
+    443L
+  } else {
+    80L
+  }
 }
