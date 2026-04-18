@@ -36,17 +36,18 @@ get_meter <- local({
   }
 })
 metric_attributes <- function(request, response) {
+  http_server_target <- derive_http_server_target(request)
   list2(
     http.request.method = toupper(request$method),
-    url.scheme = request$protocol,
+    url.scheme = http_server_target$scheme,
     !!!if (response$status >= 500) {
       list(error.type = as.character(response$status))
     },
     http.response.status_code = response$status,
     network.protocol.name = "http",
     network.protocol.version = "1.1",
-    server.address = sub("^(.*):.*$", "\\1", request$host),
-    server.port = server_port_from_host(request$host, request$protocol)
+    server.address = http_server_target$address,
+    server.port = http_server_target$port
   )
 }
 record_duration <- function(request, attributes) {
@@ -64,14 +65,15 @@ record_duration <- function(request, attributes) {
 push_active_request <- function(request) {
   meter <- get_meter()
   if (meter$is_enabled()) {
+    http_server_target <- derive_http_server_target(request)
     otel::up_down_counter_add(
       "http.server.active_requests",
       value = 1L,
       attributes = list(
         http.request.method = toupper(request$method),
-        url.scheme = request$protocol,
-        server.address = sub("^(.*):.*$", "\\1", request$host),
-        server.port = server_port_from_host(request$host, request$protocol)
+        url.scheme = http_server_target$scheme,
+        server.address = http_server_target$address,
+        server.port = http_server_target$port
       ),
       context = request$otel,
       meter = meter
@@ -126,6 +128,7 @@ request_ospan <- function(request, start_time, tracer) {
   # OpenTelemetry
   # network.local.address and network.local.port must be set by the framework
   # http.response.status_code and http.response.header.<key> can only be set later
+  http_server_target <- derive_http_server_target(request)
   span <- otel::start_span(
     tolower(paste0(request$method, "_", request$path)),
     options = list(
@@ -136,11 +139,11 @@ request_ospan <- function(request, start_time, tracer) {
     attributes = list2(
       http.request.method = toupper(request$method),
       url.path = request$path,
-      url.scheme = request$protocol,
+      url.scheme = http_server_target$scheme,
       network.protocol.name = "http",
-      server.port = server_port_from_host(request$host, request$protocol),
+      server.port = http_server_target$port,
       url.query = request$querystring,
-      client.address = request$ip,
+      client.address = http_server_target$address,
       network.protocol.version = "1.1",
       server.address = sub("^(.*):.*$", "\\1", request$host),
       user_agent.original = request$headers[["user_agent"]],
@@ -156,10 +159,52 @@ request_ospan <- function(request, start_time, tracer) {
   )
 }
 
-server_port_from_host <- function(host, scheme) {
+derive_http_server_target <- function(request) {
+  headers <- request$headers
+  forwarded <- headers[["forwarded"]]
+  # 1. If Forwarded
+  if (!is.null(forwarded) && nzchar(forwarded)) {
+    first <- strsplit(forwarded, ",", fixed = TRUE)[[1]][1]
+    key_values <- regmatches(first, gregexpr("([A-Za-z-]+)=(\"[^\"]*\"|[^;]+)", first))[[1]]
+    pairs <- strsplit(key_values, "=", fixed = TRUE)
+    params <- setNames(
+      vapply(pairs, function(pair) gsub('"', '', pair[[2]], fixed = TRUE), character(1)),
+      tolower(vapply(pairs, `[[`, character(1), 1L))
+    )
+    if (!is.null(params[["host"]])) {
+      return(list(
+        address = sub(":[0-9]+$", "", params[["host"]]),
+        port = port_or_default(params[["host"]], params[["proto"]] %||% request$protocol),
+        scheme = params[["proto"]] %||% request$protocol
+      ))
+    }
+  }
+  # 2. X-Forwarded-*
+  x_forwarded_host <- headers[["x_forwarded_host"]]
+  x_forwarded_proto <- headers[["x_forwarded_proto"]]
+  x_forwarded_port <- headers[["x_forwarded_port"]]
+  if (!is.null(x_forwarded_host)) {
+    scheme <- x_forwarded_proto %||% request$protocol
+    host   <- strsplit(x_forwarded_host, ",", fixed = TRUE)[[1]][1]
+    port <- if (!is.null(x_forwarded_port)) {
+      as.integer(strsplit(x_forwarded_port, ",", fixed = TRUE)[[1]][1])
+    } else {
+      port_or_default(host, scheme)
+    }
+    return(list(address = sub(":[0-9]+$", "", host), port = port, scheme = scheme))
+  }
+  # 3. Host header
+  list(
+    address = sub(":[0-9]+$", "", request$host),
+    port = port_or_default(request$host, request$protocol),
+    scheme = request$protocol
+  )
+}
+
+port_or_default <- function(host, scheme) {
   m <- regmatches(host, regexec(":([0-9]+)$", host))[[1]]
   if (length(m) == 2L) {
-    as.integer(m[[2]]) 
+    as.integer(m[[2]])
   } else if (identical(scheme, "https")) {
     443L
   } else {
