@@ -143,9 +143,9 @@ request_ospan <- function(request, start_time, tracer) {
       network.protocol.name = "http",
       server.port = http_server_target$port,
       url.query = request$querystring,
-      client.address = http_server_target$address,
+      client.address = request$ip,
       network.protocol.version = "1.1",
-      server.address = sub("^(.*):.*$", "\\1", request$host),
+      server.address = http_server_target$address,
       user_agent.original = request$headers[["user_agent"]],
       !!!set_names(
         request$headers,
@@ -163,7 +163,7 @@ derive_http_server_target <- function(request) {
   headers <- request$headers
   forwarded <- headers[["forwarded"]]
   # 1. If Forwarded
-  if (!is.null(forwarded) && nzchar(forwarded)) {
+  if (!is.null(forwarded) && nzchar(forwarded[1])) {
     first <- strsplit(forwarded, ",", fixed = TRUE)[[1]][1]
     key_values <- regmatches(first, gregexpr("([A-Za-z-]+)=(\"[^\"]*\"|[^;]+)", first))[[1]]
     pairs <- strsplit(key_values, "=", fixed = TRUE)
@@ -171,11 +171,14 @@ derive_http_server_target <- function(request) {
       vapply(pairs, function(pair) gsub('"', '', pair[[2]], fixed = TRUE), character(1)),
       tolower(vapply(pairs, `[[`, character(1), 1L))
     )
-    if (!is.null(params[["host"]])) {
+    host <- unname(params["host"])
+    proto <- unname(params["proto"])
+    if (!is.na(host)) {
+      scheme <- if (is.na(proto)) request$protocol else proto
       return(list(
-        address = sub(":[0-9]+$", "", params[["host"]]),
-        port = port_or_default(params[["host"]], params[["proto"]] %||% request$protocol),
-        scheme = params[["proto"]] %||% request$protocol
+        address = sub(":[0-9]+$", "", host),
+        port = port_or_default(host, scheme),
+        scheme = scheme
       ))
     }
   }
